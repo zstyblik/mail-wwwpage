@@ -552,6 +552,22 @@ develop your own configuration.
   $gpg_passphrase = "12345678"; - secret key passphrase(mandatory)
   $gpg_my_keyid = "CEB62607"; - our secret key ID(mandatory)
 
+=head1 Usage
+
+Usage is fairly simple. After everything is set up, just send an e-mail for this
+script, say 'user@example.com'. Subject of e-mail doesn't matter as long as
+you're using PGP. Supported "commands" are GET and POST. Yes, you'll have to
+figure out which one you need, however GET will do just fine in, what, 90% of
+cases? POST is usually used for web forms.
+
+Syntax is:
+
+  GET <URL>
+  POST <URL>
+
+Each command must be at the beginning of the new line. Other than that, it can
+be anywhere in the mail body.
+
 =head1 FAQ
 
  Q: When is e-mail considered valid?
