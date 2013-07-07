@@ -1,0 +1,341 @@
+#!/usr/bin/perl
+# 2012/Jun/01 @ Zdenek Styblik
+# Desc: parse e-mail from input, fetch WWW content and mail it back
+#
+# NOTE: This version uses PGP-MIME or something close to it. It didn't work for
+# me, so I got back to GPG. Thus this is left at some state of un-finish-eness.
+#
+use strict;
+use warnings;
+
+use Email::Simple;
+use LWP::UserAgent;
+use Mail::GPG;
+use Mail::Sendmail;
+use MIME::Base64;
+use MIME::Entity;
+use MIME::Parser;
+use MIME::QuotedPrint qw(encode_qp);
+use POSIX qw(strftime);
+
+# Variables
+my $debug = 1;
+## SMTP settings
+my $my_user = "test";
+my $my_domain = "example.com";
+my $my_email = sprintf("%s@%s", $my_user, $my_domain);
+my $my_subject = "test";
+my $my_smtp = "";
+## LWP settings
+my $max_wwwpage_size = 2097152;
+my @protocols_forbidden = qw(file mail);
+my @proxy_schemes = qw//; # qw(http https ftp)
+my $proxy_url = ""; # http://localhost:8000/
+## GPG settings
+my $gpg_homedir = "/tmp/.gpg-test/";
+my $gpg_passphrase = "123456789012345";
+my $gpg_my_keyid = "CEB62607"; # TODO - remove?
+##
+my $file_users = "/tmp/allowed_users.txt";
+
+# Desc: create LWP::UA instance and fetch WWW content
+# $url: URL to fetch
+# $method: GET || POST method
+# @returns: qw/ret_code, LWP::UA instance/
+# @returns: qw/ret_code, undef/ on error
+sub get_wwwpage
+{
+	my $url = shift || "";
+	my $method = shift || "GET";
+	if (!$url || $url eq "") {
+		# "Empty URL given."
+		return (-1, undef);
+	}
+	if ($url !~ /^(ht|f)tp(s?):\/\//) {
+		# "URL must be 'http://' or 'https://', '%s' given."
+		return (-2, undef);
+	}
+	if (!$method || $method eq "") {
+		# "No method given."
+		return (-3, undef);
+	}
+	if ($method ne "POST" && $method ne "GET") {
+		# "Method '%s' is invalid."
+		return (-4, undef);
+	}
+  # Create a user agent object
+  use LWP::UserAgent;
+  my $ua = LWP::UserAgent->new;
+  $ua->agent("MyApp/0.1 ");
+	$ua->protocols_forbidden(\@protocols_forbidden);
+	$ua->max_size($max_wwwpage_size);
+	if (@proxy_schemes && $proxy_url) {
+		$ua->proxy(\@proxy_schemes, $proxy_url);
+	} # if (@proxy_schemes && $proxy_url)
+
+  # Create a request
+  my $req = HTTP::Request->new($method => $url);
+
+  # Pass request to the user agent and get a response back
+  my $res = $ua->request($req);
+
+  # Check the outcome of the response
+  if ($res->is_success) {
+      return ($res->code, $res);
+  } else {
+			return ($res->code, $res);
+  }
+} # sub get_wwwpage
+
+# 1] get e-mail from STDIN
+# TODO - TMP
+my $file = '/tmp/mail.dumped.txt.gpg.sig';
+
+my $email_txt = "";
+open(FH_MAIL, '<', $file) or die("Unable to open '".$file."'.");
+for my $line (<FH_MAIL>) {
+	$email_txt.=$line;
+}
+close(FH_MAIL);
+# TODO - TMP
+
+# 2] create Email::Simple
+my $email_obj = Email::Simple->new($email_txt);
+
+my $mime_parser = MIME::Parser->new;
+die "Unable to create MIME::Parser: ".$! unless $mime_parser;
+$mime_parser->decode_bodies(0);
+
+my $mime_entity_in = $mime_parser->parse_data($email_txt);
+die "Unable to create MIME::Entity - in: ".$! unless $mime_entity_in;
+
+# 3] check for its validity - subject, data, from, to etc.
+# From, Return-Path, X-Original-To, Delivered-To, To, Date, Message-ID, Subject
+my $mail_validity = 0;
+## - From
+my $email_from = $mime_entity_in->head->get("From");
+
+# 4] check whether body is PGP encrypted
+my $mail_encrypted = 0;
+
+my $gpg = Mail::GPG->new(
+	gnupg_hash_init => { homedir => $gpg_homedir },
+	default_key_id => $gpg_my_keyid,
+);
+die "Failed to init Mail::GPG: ".$! unless $gpg;
+
+my $mail_body;
+my $gpg_rcpt_keyid = "";
+if ($gpg->is_signed(entity => $mime_entity_in)) {
+	if ($debug > 0) {
+		printf STDERR "It's signed!\n";
+	}
+	$mail_encrypted = 1;
+	# gpg_rc == 0
+	# sign_ok == 1
+	# look up 'sign_key_id'
+	$mail_body = $mime_entity_in->body();
+} elsif ($gpg->is_encrypted(entity => $mime_entity_in)) {
+	if ($debug > 0) {
+		printf STDERR "It's encrypted!\n";
+	}
+	$mail_encrypted = 2;
+	my ($decrypted_entity, $result) = $gpg->decrypt(entity => $mime_entity_in,
+		passphrase => $gpg_passphrase);
+	# TODO - enc_key_id - is look-up-able + save it
+	# TODO - gpg_rc == 0
+	if ($result->{'gpg_rc'} != 0) {
+		printf STDERR "GPG returned %i, expected 0.\n", $result->{'gpg_rc'};
+	}
+	if ($debug > 0) {
+		printf STDERR "+++\n";
+		my $arr_ref = $decrypted_entity->body();
+		for my $line (@$arr_ref) {
+			printf STDERR "%s\n", $line;
+		}
+		printf STDERR "---\n";
+	}
+	$gpg_rcpt_keyid = $result->{'enc_key_id'};
+	$mail_body = $decrypted_entity->body();
+} else {
+	# move e-mail validity evaluation here ?
+	$mail_body = $mime_entity_in->body();
+}
+
+# 5] check e-mail body for what to do
+# +
+# 6] fetch page via LWP check the code, resp. errors
+# TODO - create Object - command, url, rc, status msg, content
+my $tmp_str = encode_base64("Re: ".join(" ",
+	$mime_entity_in->head->get("Subject")));
+my $subject_enc = "";
+my $boundary = sprintf("====%s====", time().int(rand()));
+for my $chunk ( split(/\n/, $tmp_str) ) {
+        chomp($chunk);
+        next unless ($chunk);
+        $subject_enc.= "=?UTF-8?B?".$chunk."?= ";
+}
+my $mime_entity_out = MIME::Entity->build(
+	Type => "multipart/mixed",
+	Boundary => $boundary,
+	From => $my_email,
+	To => "foo\@example.com",
+	Subject => $subject_enc,
+	Encoding => '7bit',
+);
+if (!$mime_entity_out) {
+	printf STDERR "Failed to create outbox MIME::Entity.\n";
+	exit(1);
+}
+#
+my $mail_message = "";
+my $attachments = ""; # TODO - delete
+my $counter = 0;
+my $lines_ignored = 0;
+for my $line (@$mail_body) {
+	chomp($line);
+	if ($line =~ /^\s*$/) {
+		next;
+	}
+	if ($mail_encrypted == 1 && $line =~ /\bBEGIN PGP SIGNED MESSAGE\b/) {
+		next;
+	}
+	if ($mail_encrypted == 1 && $line =~ /^Hash: /) {
+		next;
+	}
+	if ($mail_encrypted == 1 && $line =~ /\bBEGIN PGP SIGNATURE\b/) {
+		$lines_ignored = 1;
+	}
+	if ($lines_ignored == 1 && $line =~ /\bEND PGP SIGNATURE\b/) {
+		$lines_ignored = 0;
+		next;
+	} elsif ($lines_ignored == 1) {
+		next;
+	}
+	if ($line =~ /^GET .+/i || $line =~ /^POST .+/i) {
+		my @arr_tmp = split(/ /, $line);
+		my $url = "";
+		if ($arr_tmp[1]) {
+			$url = $arr_tmp[1];
+		}
+		my @arr_ret = &get_wwwpage($url, $arr_tmp[0]);
+
+		my $ret_msg = "Unknown error.";
+		if ($arr_ret[0] > 0) {
+			$ret_msg = sprintf("%s %s\n", $arr_ret[1]->code, $arr_ret[1]->message);
+
+			my $attach_filename = $arr_ret[1]->filename;
+			my @arr_ctype = split(/;/, $arr_ret[1]->header('Content-Type'));
+			if (!$arr_ctype[1] && !$arr_ret[1]->header('Content-Encoding')) {
+				$arr_ctype[1] = "UTF-8";
+			} elsif (!$arr_ctype[1] && $arr_ret[1]->header('Content-Encoding')) {
+				# Note: I haven't seen value of this one, so expect unexpected.
+				$arr_ctype[1] = $arr_ret[1]->header('Content-Encoding');
+			} else {
+				# ' charset=UTF-8' is expected
+				$arr_ctype[1] = substr($arr_ctype[1], index($arr_ctype[1], "=")+1);
+			}
+			if (!$attach_filename) {
+				my $suffix = "txt";
+				if ($arr_ctype[0] eq 'text/html') {
+					$suffix = "html";
+				} # if ($res->header('Content-Type')
+				$attach_filename = sprintf("file%i.%s", $counter, $suffix);
+				$counter++;
+			} # if (!$attach_filename)
+			my $mime_entity_tmp = MIME::Entity->build(
+				Charset => $arr_ctype[1],
+				Data => $arr_ret[1]->content,
+				Encoding => "base64",
+				Filename => $attach_filename,
+				Type => $arr_ctype[0],
+			);
+			#
+			if ($mail_encrypted == 2) {
+				next;
+				my @recipients = qw//;
+				push(@recipients, $gpg_rcpt_keyid);
+				my $entity_encrypted = $gpg->mime_sign_encrypt(
+					entity => $mime_entity_tmp,
+					recipients => \@recipients,
+					passphrase => $gpg_passphrase,
+				);
+				$mime_entity_out->add_part($entity_encrypted);
+				if (!$mime_entity_out) {
+					printf STDERR "MIME::Entity out is gone!\n";
+					exit(1);
+				}
+			} else {
+				$mime_entity_out->add_part($mime_entity_tmp);
+			}
+		} else {
+			if ($arr_ret[0] == -1) {
+				$ret_msg = "Empty URL given.";
+			} elsif ($arr_ret[0] == -2) {
+				$ret_msg = sprintf("URL must be 'http://' or 'https://', '%s' given.",
+					$url);
+			} elsif ($arr_ret[0] == -3) {
+				$ret_msg = "No method given.";
+			} elsif ($arr_ret[0] == -4) {
+				$ret_msg = sprintf("Method '%s' is invalid.", $arr_tmp[0]);
+			}
+		}
+
+		$mail_message.= sprintf("> %s\n%s\n", $line, $ret_msg);
+	} else {
+		$mail_message.= sprintf("> %s\nNot understood.\n", $line);
+	}
+} # for my $line
+
+# 7] If body was encrypted, encrypt as well
+if ($mail_encrypted == 1) {
+	# GPG specific code here
+	$mime_entity_out->attach(
+		Type => "text/plain",
+		Charset => "UTF-8",
+		Encoding => '7bit',
+		Data => $mail_message,
+	);
+	my $mime_entity_tmp = MIME::Entity->build(
+		Type => "text/plain",
+		Charset => "UTF-8",
+		Encoding => '7bit',
+		Data => $mail_message,
+	);
+	my $entity_signed = $gpg->mime_sign(
+		entity => $mime_entity_tmp,
+		passphrase => $gpg_passphrase,
+	);
+	if (!$entity_signed) {
+		printf STDERR "Failed to sign message!\n";
+	}
+	$mime_entity_out->add_part($entity_signed);
+} elsif ($mail_encrypted == 2) {
+	my $mime_entity_tmp = MIME::Entity->build(
+		Type => "text/plain",
+		Charset => "UTF-8",
+		Encoding => '7bit',
+		Data => $mail_message,
+	);
+	# GPG specific code here
+	my @recipients = qw//;
+	push(@recipients, $gpg_rcpt_keyid);
+	my $entity_encrypted = $gpg->mime_sign_encrypt(
+		entity => $mime_entity_tmp,
+		recipients => \@recipients,
+		passphrase => $gpg_passphrase,
+	);
+	$mime_entity_out->add_part($entity_encrypted);
+} else {
+	$mime_entity_out->attach(
+		Type => "text/plain",
+		Charset => "UTF-8",
+		Encoding => '7bit',
+		Data => $mail_message,
+	);
+}
+# 8] create Mail::Sendmail, attach fetched page, 
+# TODO - remove static mail-to
+
+$mime_entity_out->print(\*STDOUT);
+# EOF
