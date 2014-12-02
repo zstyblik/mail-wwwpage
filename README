@@ -1,1 +1,142 @@
-To read documentation use: % perldoc mail-webpage.pl ;
+NAME
+    mail-webpage - script to parse e-mail, get page(s) and mail them back
+
+DESCRIPTION
+    Script which reads an e-mail from STDIN, parses its body for commands,
+    downloads web pages and mails them back. It seems to be one of the ways
+    how to anonymize browsing. The original idea was pitched in one
+    interview with RMS.
+
+    Script utilizes GPG for authentification/authorization and privacy.
+    Encryption of message and attachments is supported.
+
+REQUIREMENTS
+     - Perl and some Perl packages
+     - Postfix or another mail server
+     - GnuPG tools
+
+INSTALLATION
+    Installation and configuration of Postifx is beyond the scope of this
+    help. It is assumed you know how to properly configure and administer
+    Posfix.
+
+    It is also assumed you know how to configure GnuPG. Some information can
+    be found here - http://www.madboa.com/geek/gpg-quickstart/
+
+    Following text is just a proposition. Excercise your liberty to alter or
+    develop your own configuration.
+
+      - # mkdir /var/lib/mail-page/;
+      - # mkdir /var/lib/mail-page/tmp/;
+      - # mkdir /var/lib/mail-page/.gpg/;
+      - # chown nobody:root /var/lib/mail-page/;
+      - # chmod 750 /var/lib/mail-page/;
+      - # cd /var/lib/mail-page/;
+      - # chmod 700 /var/lib/mail-page/.gpg/;
+      - # gpg --homedir /var/lib/mail-page/.gpg/ --gen-key;
+      - # chown -R nobody:root /var/lib/mail-page/.gpg/;
+      - Import your public key or keys of your users
+      - # vim /etc/postfix/aliases ; and add line:
+
+      ALIAS: |/var/lib/mail-page/mail-page.pl
+
+      - # newaliases; or # postmap /etc/postfix/aliases;
+      - edit mail-webpage.pl and configure it
+      - # postfix reload;
+
+CONFIGURATION
+      use lib <PATH>; - path to GPGmod.pm (mandatory)
+      $debug = integer; - turns on debugging output
+      $home_dir = <PATH>; - base directory
+      $tmp_dir = <PATH>; - temporary directory used by MIME to dump messages
+
+  SMTP settings
+      $my_user = "user"; - e-mail alias for receiving mail-page mails(mandatory)
+      $my_domain = "example.com"; - our domain we're sitting at(mandatory)
+      $my_smtp = ""; - address of SMTP server(non-mandatory)
+
+  Plain-text email validation
+      $disable_plaintext = 1; - disables plain-text/non-signed e-mails
+      $file_users = ""; - ACL file with e-mail addresses(non-mandatory)
+      $mail_validity = 0; - validity score we're starting with
+      $mail_validity_min = 5; - e-mail is valid when this score is reached
+      $my_subject = "someSubject"; - subject of e-mail that's expected
+
+  LWP settings
+      $max_wwwpage_size = 2097152; - maximum size of fetched page
+      @protocols_forbidden = qw(file mail); - forbidden protocols
+      @proxy_schemes = qw//; - proxy protocols
+      $proxy_url = ""; - proxy proto:addr:port
+
+  GPG settings
+      $gpg_homedir = <PATH>; - GnuPG homedir(mandatory?)
+      $gpg_passphrase = "12345678"; - secret key passphrase(mandatory)
+      $gpg_my_keyid = "CEB62607"; - our secret key ID(mandatory)
+
+Usage
+    Usage is fairly simple. After everything is set up, just send an e-mail
+    for this script, say 'user@example.com'. Subject of e-mail doesn't
+    matter as long as you're using PGP. Supported "commands" are GET and
+    POST. Yes, you'll have to figure out which one you need, however GET
+    will do just fine in, what, 90% of cases? POST is usually used for web
+    forms.
+
+    Syntax is:
+
+      GET <URL>
+      POST <URL>
+
+    Each command must be at the beginning of the new line. Other than that,
+    it can be anywhere in the mail body.
+
+FAQ
+     Q: When is e-mail considered valid?
+     A: It depends whether e-mail is plain-text, signed or encrypted.
+     - Plain-text checks for header fields and is really not recommended to use
+     - Signed e-mail has its signature verified and signature must be known
+     - Encrypted e-mails are probably obvious; decryption must be successful
+
+     Q: Why have you used GPG.pm?
+     A: Because it was the only one that worked. I've started with GPG.pm, then
+    found out it was missing some features and it actually was abandoned by its
+    original author. So I've tried couple other packages, which didn't work one
+    way or another, and ended up back with GPG.pm. I've hacked in features I wanted
+    and here we are.
+    If you come up with better solution, if you actually do one, let me know ;)
+
+     Q: Why don't you use GPG MIME?
+     A: Well, actually I had. Actually, I think it was working properly. However,
+    it didn't with Enigmail in Mozilla Thunderbird. Ok, I don't know for sure.
+
+     Q: What's the origin of this script? Where did it come from?
+     A: RMS pitched this idea in one of his interviews. He said he's never browsing
+    intranet from his own computer and that he has script like this. He didn't share
+    details and I didn't look for any. I used my imagination and implemented GnuPG
+    encryption, because e-mails are monitored nowadays.
+    It is even possible something like this exists already and is freely available.
+    Again, I didn't look for it, I wanted to try and do it myself.
+
+     Q: Don't you think this is somewhat pointless since we have projects like Tor?
+     A: No. More tools, more ways we have, better. This might not be the best, might
+    not be the brightest and perhaps outdated, but I still think it's worth having.
+
+Known Issues
+    When updating GnuPG keys files do get chowned to root, resp. to UID used
+    to update keys. There are two ways to solve it. First, simply watch out.
+    Second, use user, eg. nobody, that's supposed to own these files :)
+
+    Error handling is somewhat ... terrible. I believe it could be solved by
+    writing up function that would mail error to postmaster, or whatever. On
+    the other hand, I think MTA will handle this once message "time-outs" in
+    queue.
+
+    Be careful! Even though you don't view web page directly, I've seen
+    pages that I'll load all the missing content from web, eg. pictures,
+    CSS, scripts. Yes, it means they'll rat you out.
+
+    Debugging might be a problematic. What proven to be a good method is to
+    save e-mail into file, and then just % cat file.txt | perl
+    mail-webpage.pl ; with debug on.
+
+    I can't and won't claim all issues are handled and accounted for.
+
